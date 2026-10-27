@@ -17,7 +17,14 @@ pub struct EditorConfig {
 #[derive(Serialize, Deserialize)]
 pub struct JsonConfig {
     pub max_streams: Option<usize>,
+    /// Defaulted so that config files written by older versions still load.
+    #[serde(default = "default_max_load_bytes")]
+    pub max_load_bytes: usize,
     pub stream: jsonstream::Config,
+}
+
+fn default_max_load_bytes() -> usize {
+    64 * 1024 * 1024
 }
 
 #[derive(Serialize, Deserialize)]

@@ -300,6 +300,12 @@ inactive_char_style = "attr=dim"
 # No limit if unset
 # max_streams =
 
+# Maximum number of bytes of input to load (default: 64 MiB)
+# Larger inputs are opened as a preview: only the leading JSON values that fit
+# within this many bytes are loaded and queried, and the rest is never read,
+# so memory use stays flat however large the input is
+max_load_bytes = 67108864
+
 # JSON display settings
 # Uses promkit_widgets::jsonstream::Config directly
 [json.stream]

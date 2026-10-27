@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{self, Read, Write},
+    io::{self, Write},
     path::PathBuf,
     sync::Arc,
 };
@@ -22,12 +22,12 @@ use tokio::sync::{mpsc, RwLock};
 mod completion;
 use completion::{CompletionAction, CompletionNavigator};
 mod config;
-use config::{Config, DEFAULT_CONFIG};
+use config::{Config, JsonConfig, DEFAULT_CONFIG};
 mod context;
 use context::{Index, SharedContext};
 mod event_dispatcher;
 mod guide;
-use guide::GuideAction;
+use guide::{GuideAction, GuideMessage};
 mod json;
 mod json_viewer;
 mod query_editor;
@@ -94,23 +94,25 @@ pub struct Args {
 /// that equals "-", data is read from standard input.
 /// Otherwise, the function attempts to open and
 /// read from the file specified in the `input` argument.
-fn parse_input(args: &Args) -> anyhow::Result<String> {
-    let mut ret = String::new();
+///
+/// Inputs larger than `config.max_load_bytes` are only partially read;
+/// see [`json::read_bounded`].
+fn parse_input(
+    args: &Args,
+    config: &JsonConfig,
+) -> anyhow::Result<(String, Option<json::Preview>)> {
+    let (limit, max_streams) = (config.max_load_bytes, config.max_streams);
 
     match &args.input {
-        None => {
-            io::stdin().read_to_string(&mut ret)?;
-        }
+        None => json::read_bounded(io::stdin().lock(), limit, max_streams),
         Some(path) => {
             if path == &PathBuf::from("-") {
-                io::stdin().read_to_string(&mut ret)?;
+                json::read_bounded(io::stdin().lock(), limit, max_streams)
             } else {
-                File::open(path)?.read_to_string(&mut ret)?;
+                json::read_bounded(File::open(path)?, limit, max_streams)
             }
         }
     }
-
-    Ok(ret)
 }
 
 /// Ensures the configuration file exists, creating it with default settings if it doesn't
@@ -174,12 +176,8 @@ impl Drop for TerminalCleanupGuard {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    // Load input data
-    let input = parse_input(&args)?;
-    let input: &'static str = Box::leak(input.into_boxed_str());
-
     // Load configuration
-    let config = determine_config_file(args.config_file)
+    let config = determine_config_file(args.config_file.clone())
         .and_then(|config_file| {
             std::fs::read_to_string(&config_file)
                 .map_err(|e| anyhow!("Failed to read configuration file: {e}"))
@@ -188,6 +186,10 @@ async fn main() -> anyhow::Result<()> {
         // a missing file is already seeded with the defaults by ensure_file_exists,
         // so anything failing here is a real problem the user should hear about
         .map_err(|e| anyhow!("{e}"))?;
+
+    // Load input data
+    let (input, preview) = parse_input(&args, &config.json)?;
+    let input: &'static str = Box::leak(input.into_boxed_str());
 
     // Set up terminal
     crossterm::terminal::enable_raw_mode()?;
@@ -259,6 +261,7 @@ async fn main() -> anyhow::Result<()> {
     // Load input data into JSON viewer, initializing it with the provided configuration and keybindings.
     let load_for_json_viewer = json_viewer::initialize(
         input,
+        preview,
         config.json,
         config.keybinds.on_json_viewer.clone(),
         ctx.clone(),
@@ -355,6 +358,12 @@ async fn main() -> anyhow::Result<()> {
 
     // Await JSON viewer bootstrap to complete, which will initialize the viewer with the input data and configuration.
     let shared_json_viewer = load_for_json_viewer.await?;
+    // Let the user know when only part of the input was loaded.
+    if let Some(preview) = preview {
+        guide_action_tx
+            .send(GuideAction::Show(GuideMessage::Previewing(preview)))
+            .await?;
+    }
     // Spawn the JSON viewer processor task, which will handle updates to the JSON viewer based on user input and query changes.
     let json_viewer_task = json_viewer::start_viewer_task(
         json_viewer_action_rx,

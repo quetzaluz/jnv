@@ -14,7 +14,7 @@ use crate::{
     config::{JsonConfig, JsonViewerKeybinds},
     context::{Index, SharedContext, State},
     guide::{self, GuideAction, GuideMessage},
-    json,
+    json::{self, Preview},
 };
 
 /// Represent the trigger for rendering views.
@@ -32,6 +32,8 @@ pub enum RenderTrigger {
 pub struct JsonViewer {
     state: jsonstream::State,
     json: Vec<serde_json::Value>,
+    /// Set when only part of the input was loaded.
+    preview: Option<Preview>,
     keybinds: JsonViewerKeybinds,
 }
 
@@ -91,7 +93,8 @@ impl JsonViewer {
     ) -> (Option<GuideMessage>, Option<StyledGraphemes>) {
         match json::run_jaq(&input, &self.json) {
             Ok(ret) => {
-                let mut guide = None;
+                // Query results reflect the preview only, so keep reminding the user.
+                let mut guide = self.preview.map(GuideMessage::Previewing);
                 if ret.iter().all(|val| *val == Value::Null) {
                     guide = Some(GuideMessage::JqReturnedNull(input));
 
@@ -117,6 +120,7 @@ impl JsonViewer {
 /// Initialize the JSON viewer with the given input, configuration, keybinds, and shared context.
 pub async fn initialize(
     input: &'static str,
+    preview: Option<Preview>,
     config: JsonConfig,
     keybinds: JsonViewerKeybinds,
     shared_ctx: SharedContext,
@@ -158,6 +162,7 @@ pub async fn initialize(
 
     Ok(Arc::new(Mutex::new(JsonViewer {
         json: input_stream,
+        preview,
         state,
         keybinds,
     })))

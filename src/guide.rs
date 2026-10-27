@@ -5,7 +5,10 @@ use promkit_widgets::{
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
-use crate::context::{Index, SharedContext};
+use crate::{
+    context::{Index, SharedContext},
+    json::Preview,
+};
 
 /// Represent a message to be shown in the guide.
 /// This is used to decouple the logic of generating messages from the logic of rendering them.
@@ -20,6 +23,7 @@ pub enum GuideMessage {
     NoSuggestionFound(String),
     JqReturnedNull(String),
     JqFailed(String),
+    Previewing(Preview),
 }
 
 /// Represent an action to be performed on the guide.
@@ -66,6 +70,13 @@ fn message_to_state(message: GuideMessage) -> status::State {
         GuideMessage::JqFailed(e) => {
             status::State::new(format!("jq failed: `{e}`"), Severity::Error)
         }
+        GuideMessage::Previewing(Preview { values, bytes }) => status::State::new(
+            format!(
+                "Input too large: previewing the first {values} JSON values ({:.1} MiB); queries run on this preview only",
+                bytes as f64 / (1024.0 * 1024.0)
+            ),
+            Severity::Warning,
+        ),
     }
 }
 
