@@ -5,7 +5,10 @@ use promkit_widgets::{
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
-use crate::context::{Index, SharedContext};
+use crate::{
+    context::{Index, SharedContext},
+    input::Preview,
+};
 
 /// Represent a message to be shown in the guide.
 /// This is used to decouple the logic of generating messages from the logic of rendering them.
@@ -80,25 +83,33 @@ pub fn copy_to_clipboard_message(content: &str) -> GuideMessage {
     }
 }
 
+/// State of the guide when there is no message to show.
+/// A preview notice stays regardless of `no_hint`, since it is about what the results mean.
+fn idle_state(preview: Option<Preview>) -> status::State {
+    match preview {
+        Some(preview) => status::State::new(preview.message(), Severity::Warning),
+        None => status::State::default(),
+    }
+}
+
 /// Spawn a task that listens for guide actions and updates the guide view accordingly.
 pub fn start_guide_task(
     mut action_rx: mpsc::Receiver<GuideAction>,
     shared_renderer: SharedRenderer<Index>,
     shared_ctx: SharedContext,
     no_hint: bool,
+    preview: Option<Preview>,
 ) -> JoinHandle<anyhow::Result<()>> {
     tokio::spawn(async move {
         loop {
             tokio::select! {
                 Some(action) = action_rx.recv() => {
                     let area = shared_ctx.area().await;
-                    let view = if no_hint {
-                        Default::default()
-                    } else {
-                        match action {
-                            GuideAction::Clear => status::State::default().create_graphemes(area.0, area.1),
-                            GuideAction::Show(message) => message_to_state(message).create_graphemes(area.0, area.1),
-                        }
+                    let view = match action {
+                        GuideAction::Show(message) if !no_hint => message_to_state(message).create_graphemes(area.0, area.1),
+                        _ if preview.is_some() => idle_state(preview).create_graphemes(area.0, area.1),
+                        GuideAction::Clear if !no_hint => idle_state(None).create_graphemes(area.0, area.1),
+                        _ => Default::default(),
                     };
                     shared_renderer.update([(Index::Guide, view)]).render().await?;
                 }

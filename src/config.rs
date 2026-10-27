@@ -14,9 +14,22 @@ pub struct EditorConfig {
     pub on_defocus: text_editor::Config,
 }
 
+fn default_large_input_threshold() -> usize {
+    256 * 1024 * 1024
+}
+
+fn default_preview_size() -> usize {
+    16 * 1024 * 1024
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct JsonConfig {
     pub max_streams: Option<usize>,
+    // Defaulted so that configuration files written by older versions keep loading.
+    #[serde(default = "default_large_input_threshold")]
+    pub large_input_threshold: usize,
+    #[serde(default = "default_preview_size")]
+    pub preview_size: usize,
     pub stream: jsonstream::Config,
 }
 
@@ -138,5 +151,36 @@ pub struct Config {
 impl Config {
     pub fn load_from(content: &str) -> anyhow::Result<Self> {
         toml::from_str(content).map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_matches_serde_defaults() {
+        let config = Config::load_from(DEFAULT_CONFIG).unwrap();
+        assert_eq!(
+            config.json.large_input_threshold,
+            default_large_input_threshold()
+        );
+        assert_eq!(config.json.preview_size, default_preview_size());
+    }
+
+    #[test]
+    fn config_without_preview_settings_still_loads() {
+        let content = DEFAULT_CONFIG
+            .lines()
+            .filter(|line| {
+                !line.starts_with("large_input_threshold") && !line.starts_with("preview_size")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let config = Config::load_from(&content).unwrap();
+        assert_eq!(
+            config.json.large_input_threshold,
+            default_large_input_threshold()
+        );
     }
 }

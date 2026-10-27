@@ -64,6 +64,18 @@ inactive_char_style = "attr=dim"
 # No limit if unset
 # max_streams =
 
+# Inputs larger than this many bytes are not loaded entirely if they are streams
+# of JSON values (e.g., JSON Lines format): only their first records are shown,
+# and filters, copying and --write-to-stdout cover only those records.
+# A single huge JSON document is always loaded entirely.
+# Set to 0 to always load everything, which takes about 20 times the input size in memory
+large_input_threshold = 268435456
+
+# Approximate number of bytes of records to keep when previewing a large input,
+# up to 100000 records
+# A larger value shows more records but uses more memory
+preview_size = 16777216
+
 # JSON display settings
 # Uses promkit_widgets::jsonstream::Config directly
 [json.stream]

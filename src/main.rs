@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{self, Read, Write},
+    io::{self, Write},
     path::PathBuf,
     sync::Arc,
 };
@@ -28,6 +28,8 @@ use context::{Index, SharedContext};
 mod event_dispatcher;
 mod guide;
 use guide::GuideAction;
+mod input;
+use input::Input;
 mod json;
 mod json_viewer;
 mod query_editor;
@@ -94,23 +96,23 @@ pub struct Args {
 /// that equals "-", data is read from standard input.
 /// Otherwise, the function attempts to open and
 /// read from the file specified in the `input` argument.
-fn parse_input(args: &Args) -> anyhow::Result<String> {
-    let mut ret = String::new();
-
-    match &args.input {
-        None => {
-            io::stdin().read_to_string(&mut ret)?;
+/// Large streams of JSON values are cut down to a preview, see [`input::read`].
+fn parse_input(
+    input: &Option<PathBuf>,
+    threshold: usize,
+    preview_size: usize,
+) -> anyhow::Result<Input> {
+    let input = match input {
+        Some(path) if path != &PathBuf::from("-") => {
+            let file = File::open(path)?;
+            let metadata = file.metadata()?;
+            let total_bytes = metadata.is_file().then_some(metadata.len());
+            input::read(file, total_bytes, threshold, preview_size)?
         }
-        Some(path) => {
-            if path == &PathBuf::from("-") {
-                io::stdin().read_to_string(&mut ret)?;
-            } else {
-                File::open(path)?.read_to_string(&mut ret)?;
-            }
-        }
-    }
+        _ => input::read(io::stdin(), None, threshold, preview_size)?,
+    };
 
-    Ok(ret)
+    Ok(input)
 }
 
 /// Ensures the configuration file exists, creating it with default settings if it doesn't
@@ -174,10 +176,6 @@ impl Drop for TerminalCleanupGuard {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    // Load input data
-    let input = parse_input(&args)?;
-    let input: &'static str = Box::leak(input.into_boxed_str());
-
     // Load configuration
     let config = determine_config_file(args.config_file)
         .and_then(|config_file| {
@@ -188,6 +186,14 @@ async fn main() -> anyhow::Result<()> {
         // a missing file is already seeded with the defaults by ensure_file_exists,
         // so anything failing here is a real problem the user should hear about
         .map_err(|e| anyhow!("{e}"))?;
+
+    // Load input data
+    let Input { text, preview } = parse_input(
+        &args.input,
+        config.json.large_input_threshold,
+        config.json.preview_size,
+    )?;
+    let input: &'static str = Box::leak(text.into_boxed_str());
 
     // Set up terminal
     crossterm::terminal::enable_raw_mode()?;
@@ -325,7 +331,13 @@ async fn main() -> anyhow::Result<()> {
         renderer.clone(),
         ctx.clone(),
         config.no_hint,
+        preview,
     );
+
+    // The guide shows the preview notice whenever it is cleared, so let it show up from the start.
+    if preview.is_some() {
+        guide_action_tx.send(GuideAction::Clear).await?;
+    }
 
     // Wrap the query editor and completion navigator in Arc<Mutex<>> to allow shared mutable access across async tasks.
     let shared_query_editor = Arc::new(RwLock::new(query_editor));
@@ -419,6 +431,9 @@ async fn main() -> anyhow::Result<()> {
         stdout.write_all(output.as_bytes())?;
         if !output.ends_with('\n') {
             stdout.write_all(b"\n")?;
+        }
+        if let Some(preview) = preview {
+            eprintln!("jnv: {}", preview.message());
         }
     }
 
