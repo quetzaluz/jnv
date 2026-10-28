@@ -46,7 +46,8 @@ pub fn read_bounded(
         }
 
         let (values, bytes) = complete_prefix(&buf, max_streams)?;
-        if values > 0 {
+        // With `max_streams = 0` no value is ever wanted, so growing would read everything.
+        if values > 0 || max_streams == Some(0) {
             buf.truncate(bytes);
             return Ok((into_string(buf)?, Some(Preview { values, bytes })));
         }
@@ -190,6 +191,19 @@ mod tests {
             Some(Preview {
                 values: 2,
                 bytes: 3
+            })
+        );
+    }
+
+    #[test]
+    fn zero_max_streams_does_not_read_whole_input() {
+        let (text, preview) = read("[1,2,3] [4,5,6] [7,8,9]", 4, Some(0));
+        assert_eq!(text, "");
+        assert_eq!(
+            preview,
+            Some(Preview {
+                values: 0,
+                bytes: 0
             })
         );
     }
