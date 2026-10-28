@@ -39,13 +39,16 @@ pub struct Input {
 }
 
 fn format_size(bytes: u64) -> String {
+    const KIB: f64 = (1 << 10) as f64;
     const MIB: f64 = (1 << 20) as f64;
     const GIB: f64 = (1 << 30) as f64;
     let bytes = bytes as f64;
     if bytes >= GIB {
         format!("{:.1} GiB", bytes / GIB)
-    } else {
+    } else if bytes >= MIB {
         format!("{:.1} MiB", bytes / MIB)
+    } else {
+        format!("{:.1} KiB", bytes / KIB)
     }
 }
 
@@ -60,9 +63,10 @@ fn into_text(bytes: Vec<u8>) -> io::Result<String> {
 
 /// Find where the preview should end: the end of the first complete JSON value
 /// at or past `preview_size` bytes or [`PREVIEW_MAX_RECORDS`] records,
-/// or the last complete value in `text`.
+/// or the last complete value in `text`. If the user set `max_streams`, that
+/// many records are wanted regardless of those limits.
 /// Returns `None` if `text` does not hold a single complete value.
-fn preview_end(text: &str, preview_size: usize) -> Option<usize> {
+fn preview_end(text: &str, preview_size: usize, max_streams: Option<usize>) -> Option<usize> {
     let mut stream = Deserializer::from_str(text).into_iter::<IgnoredAny>();
     let mut end = 0;
     let mut records = 0;
@@ -71,7 +75,11 @@ fn preview_end(text: &str, preview_size: usize) -> Option<usize> {
             Ok(_) => {
                 end = stream.byte_offset();
                 records += 1;
-                if end >= preview_size || records >= PREVIEW_MAX_RECORDS {
+                let done = match max_streams {
+                    Some(max_streams) => records >= max_streams,
+                    None => end >= preview_size || records >= PREVIEW_MAX_RECORDS,
+                };
+                if done {
                     break;
                 }
             }
@@ -95,6 +103,7 @@ pub fn read(
     total_bytes: Option<u64>,
     threshold: usize,
     preview_size: usize,
+    max_streams: Option<usize>,
 ) -> io::Result<Input> {
     let mut bytes = Vec::new();
 
@@ -114,7 +123,7 @@ pub fn read(
         // Cutting at a newline can't split a UTF-8 character or a top-level number.
         let complete_lines = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
         let end = std::str::from_utf8(&bytes[..complete_lines])
-            .map(|head| preview_end(head, preview_size))
+            .map(|head| preview_end(head, preview_size, max_streams))
             .map_err(|_| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -150,7 +159,7 @@ mod tests {
     const PREVIEW_SIZE: usize = 16;
 
     fn read_str(input: &str) -> io::Result<Input> {
-        read(input.as_bytes(), None, THRESHOLD, PREVIEW_SIZE)
+        read(input.as_bytes(), None, THRESHOLD, PREVIEW_SIZE, None)
     }
 
     fn ndjson(records: usize) -> String {
@@ -174,6 +183,7 @@ mod tests {
             Some(text.len() as u64),
             THRESHOLD,
             PREVIEW_SIZE,
+            None,
         )
         .unwrap();
 
@@ -193,7 +203,7 @@ mod tests {
     fn reader_is_not_drained_when_previewing() {
         let text = ndjson(100);
         let mut reader = text.as_bytes();
-        read(&mut reader, None, THRESHOLD, PREVIEW_SIZE).unwrap();
+        read(&mut reader, None, THRESHOLD, PREVIEW_SIZE, None).unwrap();
         assert_eq!(reader.len(), text.len() - THRESHOLD - 1);
     }
 
@@ -202,7 +212,7 @@ mod tests {
         // The read stops inside the last "é" of the record that crosses the limit.
         let text = format!("{}\n\"{}\"\n", "1\n".repeat(30), "é".repeat(20));
         assert!(std::str::from_utf8(&text.as_bytes()[..THRESHOLD + 1]).is_err());
-        let input = read(text.as_bytes(), None, THRESHOLD, THRESHOLD * 2).unwrap();
+        let input = read(text.as_bytes(), None, THRESHOLD, THRESHOLD * 2, None).unwrap();
         assert!(input.preview.is_some());
         assert_eq!(json::deserialize(&input.text, None).unwrap().len(), 30);
     }
@@ -210,7 +220,7 @@ mod tests {
     #[test]
     fn number_at_the_read_limit_is_not_truncated() {
         let text = format!("{}\n{}\n", " ".repeat(THRESHOLD - 3), "1".repeat(10));
-        let input = read(text.as_bytes(), None, THRESHOLD, 1).unwrap();
+        let input = read(text.as_bytes(), None, THRESHOLD, 1, None).unwrap();
         // The only line break precedes the number, so there is nothing to preview.
         assert_eq!(input.preview, None);
         assert_eq!(input.text, text);
@@ -241,9 +251,21 @@ mod tests {
     #[test]
     fn tiny_records_are_capped_by_count() {
         let text = "1\n".repeat(PREVIEW_MAX_RECORDS + 10);
-        let end = preview_end(&text, usize::MAX).unwrap();
+        let end = preview_end(&text, usize::MAX, None).unwrap();
         let values = json::deserialize(&text[..end], None).unwrap();
         assert_eq!(values.len(), PREVIEW_MAX_RECORDS);
+    }
+
+    #[test]
+    fn max_streams_overrides_preview_limits() {
+        let text = ndjson(100);
+        let shown = |max_streams| {
+            let input = read(text.as_bytes(), None, THRESHOLD, PREVIEW_SIZE, max_streams).unwrap();
+            json::deserialize(&input.text, None).unwrap().len()
+        };
+        assert_eq!(shown(Some(1)), 1);
+        // Beyond the 2 records `PREVIEW_SIZE` allows, up to what the read limit holds.
+        assert_eq!(shown(Some(6)), 6);
     }
 
     #[test]
@@ -269,7 +291,7 @@ mod tests {
             bytes[3] = 0xff;
             bytes
         }] {
-            let err = read(bytes.as_slice(), None, THRESHOLD, PREVIEW_SIZE).unwrap_err();
+            let err = read(bytes.as_slice(), None, THRESHOLD, PREVIEW_SIZE, None).unwrap_err();
             assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         }
     }
@@ -277,7 +299,7 @@ mod tests {
     #[test]
     fn zero_threshold_disables_previews() {
         let text = ndjson(100);
-        let input = read(text.as_bytes(), None, 0, PREVIEW_SIZE).unwrap();
+        let input = read(text.as_bytes(), None, 0, PREVIEW_SIZE, None).unwrap();
         assert_eq!(input.text, text);
         assert_eq!(input.preview, None);
     }
@@ -291,5 +313,7 @@ mod tests {
         assert!(preview.message().contains("first 16.0 MiB of 5.0 GiB"));
         preview.total_bytes = None;
         assert!(preview.message().contains("first 16.0 MiB;"));
+        preview.shown_bytes = 3 << 10;
+        assert!(preview.message().contains("first 3.0 KiB;"));
     }
 }

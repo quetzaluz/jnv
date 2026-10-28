@@ -311,7 +311,7 @@ inactive_char_style = "attr=dim"
 large_input_threshold = 268435456
 
 # Approximate number of bytes of records to keep when previewing a large input,
-# up to 100000 records
+# up to 100000 records. Setting max_streams overrides both limits
 # A larger value shows more records but uses more memory
 preview_size = 16777216
 

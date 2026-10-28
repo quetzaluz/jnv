@@ -101,15 +101,16 @@ fn parse_input(
     input: &Option<PathBuf>,
     threshold: usize,
     preview_size: usize,
+    max_streams: Option<usize>,
 ) -> anyhow::Result<Input> {
     let input = match input {
         Some(path) if path != &PathBuf::from("-") => {
             let file = File::open(path)?;
             let metadata = file.metadata()?;
             let total_bytes = metadata.is_file().then_some(metadata.len());
-            input::read(file, total_bytes, threshold, preview_size)?
+            input::read(file, total_bytes, threshold, preview_size, max_streams)?
         }
-        _ => input::read(io::stdin(), None, threshold, preview_size)?,
+        _ => input::read(io::stdin(), None, threshold, preview_size, max_streams)?,
     };
 
     Ok(input)
@@ -192,6 +193,7 @@ async fn main() -> anyhow::Result<()> {
         &args.input,
         config.json.large_input_threshold,
         config.json.preview_size,
+        config.json.max_streams,
     )?;
     let input: &'static str = Box::leak(text.into_boxed_str());
 
